@@ -23,11 +23,17 @@ Rdetector
 
 Finds K8s Deployments that have multiple pods running on the same node.
 
+This implementation sacrifices speed for feature flexibility and extensibility
+the requirements specify that we only highligh deployments that have multiple
+pods on the same node, however it would be useful to highlight what deployments
+are only running on one node so remediation steps can be prioritized to those
+deployments.
+
 By: Matthew Vander Hoff
 Last Updated: 2022 11 15
 """
 
-import pprint
+import json
 from argparse import ArgumentParser
 
 from kubernetes import client, config
@@ -41,8 +47,18 @@ def get_commandline_flags():
     parser.add_argument('--file', help='file path to KUBECONF')
     parser.add_argument('-v', '--verbose',
                         help='enable verbose output', action="store_true")
-    parser.add_argument('-o')
+    parser.add_argument('--spof',
+                        help='highlight deployments on a single host',
+                        action="store_true")
+    parser.add_argument('-i', '--indent', help='print out indented json',
+                        action="store_true")
+    parser.add_argument('-q', '--quite', help='suppress default output',
+                        action="store_true")
     args = parser.parse_args()
+    if args.indent:
+        args.tabs = 2
+    else:
+        args.tabs = None
     return args
 
 
@@ -62,10 +78,8 @@ def get_all_deployments(kubeconf=None):
         config.load_kube_config(kubeconf)
     else:
         config.load_kube_config()
-
     core = client.CoreV1Api()
     apps = client.AppsV1Api()
-
     all_deployments = apps.list_deployment_for_all_namespaces()
     # build a mapping of deployment name to label selector
     deployments = []
@@ -91,6 +105,10 @@ def get_all_deployments(kubeconf=None):
 
 
 def find_deployments_with_multiple_pods_on_one_node(deployments):
+    # for each deployment make a list of nodes and iterate all pods checking
+    # if the node the pod is on is in the list, adding the node to the list
+    # after checking. if the node is already on the list then add the
+    # deploytment to the found list
     deployments_found = []
     for deployment in deployments:
         nodes = []
@@ -102,12 +120,27 @@ def find_deployments_with_multiple_pods_on_one_node(deployments):
     return deployments_found
 
 
+def find_deployments_on_only_one_node(deployments):
+    deployments_found = []
+    for deployment in deployments:
+        # if there is only one pod add it to the list
+        if len(deployment.get('pods')) == 1:
+            deployments_found.append(deployment.get('name'))
+            next
+        for pod in deployment.get('pods'):
+            pod.get('node')
+    return deployments_found
+
+
 if __name__ == "__main__":
-    pp = pprint.PrettyPrinter()
     args = get_commandline_flags()
     deployments = get_all_deployments(args.file)
-    found = find_deployments_with_multiple_pods_on_one_node(deployments)
     if args.verbose:
-        pp.pprint(deployments)
-    for dep in found:
-        print(dep)
+        print(json.dumps(deployments, indent=args.tabs))
+    if args.spof:
+        spof = find_deployments_on_only_one_node(deployments)
+        if len(spof) > 0:
+            print(json.dumps(spof, indent=args.tabs))
+    if not args.quite:
+        found = find_deployments_with_multiple_pods_on_one_node(deployments)
+        print(json.dumps(found, indent=args.tabs))
